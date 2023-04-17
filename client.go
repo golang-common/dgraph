@@ -91,6 +91,13 @@ func (d *Client) Txn(ronly ...bool) *Txn {
 	return &Txn{Txn: d.NewTxn()}
 }
 
+func (d *Client) SetSchemaPred(pred SchemaPred) error {
+	err := d.Alter(context.Background(), &api.Operation{
+		Schema: pred.Rdf(),
+	})
+	return err
+}
+
 func (d *Client) SetPred(pred Pred) error {
 	err := d.Alter(context.Background(), &api.Operation{
 		Schema: pred.Rdf(),
@@ -107,10 +114,18 @@ func (d *Client) DropPred(name string) error {
 	return err
 }
 
-// SetType 设置类型
-func (d *Client) SetType(tp Type) error {
+// SetSchemaType 设置schema类型
+func (d *Client) SetSchemaType(t SchemaType) error {
 	err := d.Alter(context.Background(), &api.Operation{
-		Schema: tp.Schema(),
+		Schema: t.Rdf(),
+	})
+	return err
+}
+
+// SetType 设置类型
+func (d *Client) SetType(t Type) error {
+	err := d.Alter(context.Background(), &api.Operation{
+		Schema: t.Schema().Rdf(),
 	})
 	return err
 }
