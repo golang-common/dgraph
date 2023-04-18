@@ -23,9 +23,9 @@ import (
 // Username = (可选)认证用户名
 // Password = (可选)认证密码
 type Config struct {
-	Targets  []string `yaml:"targets,omitempty" form:"targets,omitempty" json:"targets,omitempty"`
-	Username string   `yaml:"username,omitempty" form:"username,omitempty" json:"username,omitempty"`
-	Password string   `yaml:"password,omitempty" form:"password,omitempty" json:"password,omitempty"`
+	Targets  []string `yaml:"targets,omitempty" json:"targets,omitempty" mapstructure:"targets"`
+	Username string   `yaml:"username,omitempty" json:"username,omitempty" mapstructure:"username"`
+	Password string   `yaml:"password,omitempty" json:"password,omitempty" mapstructure:"password"`
 }
 
 func (c Config) NewClient() (*Client, error) {
@@ -81,11 +81,10 @@ type Client struct {
 	closed bool
 }
 
-func (d *Client) Txn(ronly ...bool) *Txn {
+func (d *Client) Txn(readOnly bool) *Txn {
 	d.Dgraph.NewTxn()
-	if len(ronly) > 0 && ronly[0] {
+	if readOnly {
 		txn := d.NewReadOnlyTxn()
-		txn = txn.BestEffort()
 		return &Txn{Txn: txn}
 	}
 	return &Txn{Txn: d.NewTxn()}
@@ -118,14 +117,6 @@ func (d *Client) DropPred(name string) error {
 func (d *Client) SetSchemaType(t SchemaType) error {
 	err := d.Alter(context.Background(), &api.Operation{
 		Schema: t.Rdf(),
-	})
-	return err
-}
-
-// SetType 设置类型
-func (d *Client) SetType(t Type) error {
-	err := d.Alter(context.Background(), &api.Operation{
-		Schema: t.Schema().Rdf(),
 	})
 	return err
 }
