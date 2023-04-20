@@ -50,7 +50,7 @@ func (t Type[T]) Schema() SchemaType {
 	return r
 }
 
-func (t Type[T]) NquadType(uid string) *api.NQuad {
+func (t Type[T]) NquadDType(uid string) *api.NQuad {
 	return &api.NQuad{
 		Subject:     uid,
 		Predicate:   "dgraph.type",
@@ -95,11 +95,10 @@ func (t Type[T]) Nquad(uid string, data T) ([]*api.NQuad, error) {
 	return r, nil
 }
 
-func (t Type[T]) nquadAll(uid string) *api.NQuad {
-	return &api.NQuad{
-		Subject:     uid,
+func (t Type[T]) NquadAll(uid string) []*api.NQuad {
+	return []*api.NQuad{{Subject: uid,
 		Predicate:   StarAll,
-		ObjectValue: &api.Value{Val: &api.Value_DefaultVal{DefaultVal: StarAll}},
+		ObjectValue: &api.Value{Val: &api.Value_DefaultVal{DefaultVal: StarAll}}},
 	}
 }
 

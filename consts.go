@@ -176,3 +176,14 @@ func numToInt64(num any) (int64, bool) {
 		return 0, false
 	}
 }
+
+func floatToFloat64(f any) (float64, bool) {
+	switch f.(type) {
+	case float32:
+		return float64(f.(float32)), true
+	case float64:
+		return f.(float64), true
+	default:
+		return 0, false
+	}
+}

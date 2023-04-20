@@ -10,6 +10,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -65,6 +66,90 @@ func (p Pred) Nquad(uid string, data any) ([]*api.NQuad, error) {
 	}
 	r = append(r, subNquad)
 	return r, nil
+}
+
+// QVal 传入结构体的一个字段，返回解析出的过滤谓词和过滤边
+// 第一个返回值示例: eq(name,"dpy"), eq(name,["dpy1","dpy2"])
+// 第二个返回值示例: @facet( eq(facet1,"val1") AND eq(facet2,"val2") )
+func (p Pred) QVal(data any) (string, string, bool) {
+	var (
+		filter, facet string
+		hasFacet      bool
+		filterList    []string
+	)
+	val := reflect.ValueOf(data)
+	if val.Kind() == reflect.Pointer {
+		if val.IsNil() {
+			return "", "", hasFacet
+		}
+		val = val.Elem()
+	}
+	if p.List {
+		for i := 0; i < val.Len(); i++ {
+			sub := val.Index(i)
+			ft, fa, hasfacet := p.qSVal(sub.Interface())
+			if ft != "" {
+				filterList = append(filterList, ft)
+			}
+			if facet == "" && fa != "" {
+				facet = fmt.Sprintf(`@facet(%s)`, fa)
+			}
+			hasFacet = hasfacet
+		}
+	} else {
+		ft, fa, hasfacet := p.qSVal(val.Interface())
+		if ft != "" {
+			filterList = append(filterList, ft)
+		}
+		if facet == "" && fa != "" {
+			facet = fmt.Sprintf(`@facet(%s)`, fa)
+		}
+		hasFacet = hasfacet
+	}
+	if len(filterList) == 1 {
+		filter = fmt.Sprintf(`eq(%s,%s)`, p.Name, filterList[0])
+	}
+	if len(filterList) > 1 {
+		filter = fmt.Sprintf(`eq(%s,[%s])`, p.Name, strings.Join(filterList, ","))
+	}
+	return filter, facet, hasFacet
+}
+
+// qSVal 解析结构体单个值(去切片后)的过滤和边
+// 第一个返回值: "dpy",  2,
+// 第二个返回值: eq(facet1, "value")
+func (p Pred) qSVal(data any) (string, string, bool) {
+	val := reflect.ValueOf(data)
+	if !val.IsValid() || val.IsZero() {
+		return "", "", false
+	}
+	switch p.Type {
+	case TypeString:
+		return fmt.Sprintf(`"%s"`, val.String()), "", false
+	case TypeInt:
+		return fmt.Sprintf(`%d`, val.Int()), "", false
+	case TypeFloat:
+		return fmt.Sprintf(`%f`, val.Float()), "", false
+	case TypeBool:
+		return fmt.Sprintf(`%t`, val.Bool()), "", false
+	case TypeUid:
+		filter := val.FieldByName(Uid).String()
+		var facet string
+		var facetList []string
+		var hasFacet bool
+		for k, v := range p.Facets {
+			hasFacet = true
+			if facetVal := v.QVal(val.FieldByName(k).Interface()); facetVal != "" {
+				facetList = append(facetList, facetVal)
+			}
+		}
+		if len(facetList) > 0 {
+			facet = strings.Join(facetList, " AND ")
+		}
+		return filter, facet, hasFacet
+	default:
+		return "", "", false
+	}
 }
 
 // singleNquad 解析单个值
@@ -133,7 +218,7 @@ func (p Pred) singleNquad(uid string, data any) (*api.NQuad, error) {
 		}
 		for k, facet := range p.Facets {
 			subval := uidVal.FieldByName(k)
-			if !subval.IsValid() || subval.IsZero() {
+			if !subval.IsValid() || subval.IsZero() || subval.IsNil() {
 				continue
 			}
 			f, err := facet.Facet(subval.Interface())
@@ -151,6 +236,24 @@ func (p Pred) singleNquad(uid string, data any) (*api.NQuad, error) {
 type Facet struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+func (f Facet) QVal(data any) string {
+	val := reflect.ValueOf(data)
+	if !val.IsValid() || val.IsZero() {
+		return ""
+	}
+	switch f.Type {
+	case "string", "datetime":
+		return fmt.Sprintf(`eq(%s,"%s")`, f.Name, val.String())
+	case "bool":
+		return fmt.Sprintf(`eq(%s,%t)`, f.Name, val.Bool())
+	case "int":
+		return fmt.Sprintf(`eq(%s,%d)`, f.Name, val.Int())
+	case "float":
+		return fmt.Sprintf(`eq(%s,%f)`, f.Name, val.Float())
+	}
+	return ""
 }
 
 func (f Facet) Facet(data any) (api.Facet, error) {
