@@ -68,88 +68,113 @@ func (p Pred) Nquad(uid string, data any) ([]*api.NQuad, error) {
 	return r, nil
 }
 
-// QVal 传入结构体的一个字段，返回解析出的过滤谓词和过滤边
-// 第一个返回值示例: eq(name,"dpy"), eq(name,["dpy1","dpy2"])
-// 第二个返回值示例: @facet( eq(facet1,"val1") AND eq(facet2,"val2") )
-func (p Pred) QVal(data any) (string, string, bool) {
-	var (
-		filter, facet string
-		hasFacet      bool
-		filterList    []string
-	)
-	val := reflect.ValueOf(data)
-	if val.Kind() == reflect.Pointer {
-		if val.IsNil() {
-			return "", "", hasFacet
-		}
-		val = val.Elem()
-	}
-	if p.List {
-		for i := 0; i < val.Len(); i++ {
-			sub := val.Index(i)
-			ft, fa, hasfacet := p.qSVal(sub.Interface())
-			if ft != "" {
-				filterList = append(filterList, ft)
-			}
-			if facet == "" && fa != "" {
-				facet = fmt.Sprintf(`@facet(%s)`, fa)
-			}
-			hasFacet = hasfacet
-		}
-	} else {
-		ft, fa, hasfacet := p.qSVal(val.Interface())
-		if ft != "" {
-			filterList = append(filterList, ft)
-		}
-		if facet == "" && fa != "" {
-			facet = fmt.Sprintf(`@facet(%s)`, fa)
-		}
-		hasFacet = hasfacet
-	}
-	if len(filterList) == 1 {
-		filter = fmt.Sprintf(`eq(%s,%s)`, p.Name, filterList[0])
-	}
-	if len(filterList) > 1 {
-		filter = fmt.Sprintf(`eq(%s,[%s])`, p.Name, strings.Join(filterList, ","))
-	}
-	return filter, facet, hasFacet
-}
-
-// qSVal 解析结构体单个值(去切片后)的过滤和边
-// 第一个返回值: "dpy",  2,
-// 第二个返回值: eq(facet1, "value")
-func (p Pred) qSVal(data any) (string, string, bool) {
-	val := reflect.ValueOf(data)
-	if !val.IsValid() || val.IsZero() {
-		return "", "", false
+// QueryFilter 解析结构体单个值(去切片后)的过滤和边,start 参数表示是否为入口解析
+func (p Pred) QueryFilter(data any) PredFilter {
+	var r PredFilter
+	val, ok := checkAndElem(reflect.ValueOf(data))
+	if !ok {
+		return r
 	}
 	switch p.Type {
 	case TypeString:
-		return fmt.Sprintf(`"%s"`, val.String()), "", false
+		if p.List && val.Kind() == reflect.Slice && val.Len() > 0 {
+			r.MainFilter = fmt.Sprintf(`eq(%s,["%s"])`, p.Name, strings.Join(data.([]string), `","`))
+		}
+		if val.Kind() == reflect.String {
+			v := data.(string)
+			if v != "" {
+				r.MainFilter = fmt.Sprintf(`eq(%s,"%s")`, p.Name, v)
+			}
+		}
 	case TypeInt:
-		return fmt.Sprintf(`%d`, val.Int()), "", false
+		if p.List && val.Kind() == reflect.Slice && val.Len() > 0 {
+			var rl []string
+			for i := 0; i < val.Len(); i++ {
+				sub := val.Index(i)
+				if val.CanInt() {
+					rl = append(rl, fmt.Sprintf("%d", sub.Int()))
+				}
+			}
+			if len(rl) > 0 {
+				r.MainFilter = fmt.Sprintf(`eq(%s,[%s])`, p.Name, strings.Join(rl, ","))
+			}
+		} else if val.CanInt() {
+			r.MainFilter = fmt.Sprintf("eq(%s,%d)", p.Name, val.Int())
+		}
 	case TypeFloat:
-		return fmt.Sprintf(`%f`, val.Float()), "", false
+		if p.List && val.Kind() == reflect.Slice && val.Len() > 0 {
+			var rl []string
+			for i := 0; i < val.Len(); i++ {
+				sub := val.Index(i)
+				if val.CanFloat() {
+					rl = append(rl, fmt.Sprintf("%f", sub.Float()))
+				}
+			}
+			if len(rl) > 0 {
+				r.MainFilter = fmt.Sprintf(`eq(%s,[%s])`, p.Name, strings.Join(rl, ","))
+			}
+		} else if val.CanFloat() {
+			r.MainFilter = fmt.Sprintf("eq(%s,%f)", p.Name, val.Float())
+		}
 	case TypeBool:
-		return fmt.Sprintf(`%t`, val.Bool()), "", false
+		if val.Kind() == reflect.Bool {
+			r.MainFilter = fmt.Sprintf("eq(%s,%t)", p.Name, val.Bool())
+		}
 	case TypeUid:
-		filter := val.FieldByName(Uid).String()
-		var facet string
+		if p.List && val.Kind() == reflect.Slice && val.Type().Elem().Kind() == reflect.Struct && val.Len() > 0 {
+			val = val.Index(0) // 如果是列表则只查询第一个元素
+		}
+		if val.Kind() != reflect.Struct {
+			break
+		}
+		// 主UID过滤项
+		if subId := val.FieldByName(Uid).String(); subId != "" {
+			r.MainFilter = fmt.Sprintf("uid_in(%s,%s)", p.Name, subId)
+		}
+		// 边解析
 		var facetList []string
-		var hasFacet bool
 		for k, v := range p.Facets {
-			hasFacet = true
+			r.HasFacet = true
 			if facetVal := v.QVal(val.FieldByName(k).Interface()); facetVal != "" {
 				facetList = append(facetList, facetVal)
 			}
 		}
 		if len(facetList) > 0 {
-			facet = strings.Join(facetList, " AND ")
+			r.FacetFilter = strings.Join(facetList, " AND ")
 		}
-		return filter, facet, hasFacet
-	default:
-		return "", "", false
+		// 子谓词解析,仅支持基础类型
+		var subFilterList []string
+		for i := 0; i < val.Type().NumField(); i++ {
+			var (
+				sok bool
+				sub = val.Field(i)
+				tag = val.Type().Field(i).Tag.Get(Db)
+			)
+			sub, sok = checkAndElem(reflect.ValueOf(data))
+			if !sok {
+				continue
+			}
+			if tag == "" || strings.Contains(tag, "|") {
+				continue
+			}
+			sval := sub.Interface()
+			switch sval.(type) {
+			case string:
+				subFilterList = append(subFilterList, fmt.Sprintf(`eq(%s,%s)`, tag, sval.(string)))
+			case []string:
+				subFilterList = append(subFilterList, fmt.Sprintf(`eq(%s,["%s"])`, tag, strings.Join(sval.([]string), `","`)))
+			case int, float64:
+				subFilterList = append(subFilterList, fmt.Sprintf(`eq(%s,%v)`, tag, sval))
+			case []int, []float64:
+				subFilterList = append(subFilterList, fmt.Sprintf(`eq(%s,%v)`, tag,
+					strings.Join(strings.Fields(fmt.Sprint(sval)), ",")))
+			}
+		}
+		if len(subFilterList) > 0 {
+			r.SubFilter = strings.Join(subFilterList, " AND ")
+		}
 	}
+	return r
 }
 
 // singleNquad 解析单个值
@@ -306,4 +331,11 @@ func (f Facet) Facet(data any) (api.Facet, error) {
 	default:
 		return api.Facet{}, fmt.Errorf("error facet datatype %s", val.Type())
 	}
+}
+
+type PredFilter struct {
+	MainFilter  string
+	FacetFilter string
+	HasFacet    bool
+	SubFilter   string
 }

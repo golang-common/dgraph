@@ -187,3 +187,16 @@ func floatToFloat64(f any) (float64, bool) {
 		return 0, false
 	}
 }
+
+func checkAndElem(value reflect.Value) (reflect.Value, bool) {
+	if !value.IsValid() || value.IsZero() {
+		return value, false
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return value, false
+		}
+		value = value.Elem()
+	}
+	return value, true
+}
