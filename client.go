@@ -18,18 +18,24 @@ import (
 	"sync"
 )
 
-// Config dgraph数据库配置
-// Targets = 请求目标,格式：[ '172.21.192.25:9080','172.21.192.26:9080','172.21.192.27:9080' ]
-// Username = (可选)认证用户名
-// Password = (可选)认证密码
-type Config struct {
-	Targets  []string `yaml:"targets,omitempty" json:"targets,omitempty" mapstructure:"targets"`
-	Username string   `yaml:"username,omitempty" json:"username,omitempty" mapstructure:"username"`
-	Password string   `yaml:"password,omitempty" json:"password,omitempty" mapstructure:"password"`
+type Option func(client *config)
+
+func WithUserAuth(username, password string) Option {
+	return func(config *config) {
+		config.username = username
+		config.password = password
+	}
 }
 
-func (c Config) NewClient() (*Client, error) {
+type config struct {
+	username string
+	password string
+	err      error
+}
+
+func NewClient(targets []string, options ...Option) (*Client, error) {
 	var (
+		cfg             config
 		err             error
 		wg              sync.WaitGroup
 		clients         []api.DgraphClient
@@ -37,19 +43,25 @@ func (c Config) NewClient() (*Client, error) {
 		opts            = []grpc.DialOption{
 			grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(256<<20), grpc.MaxCallRecvMsgSize(256<<20)),
 		}
-		conn []*grpc.ClientConn
 	)
 	defer func() {
 		if err != nil {
 			cancelFunc()
 		}
 	}()
-	if len(c.Targets) == 0 {
+	for _, opt := range options {
+		opt(&cfg)
+		if cfg.err != nil {
+			err = cfg.err
+			return nil, err
+		}
+	}
+	if len(targets) == 0 {
 		err = errors.New("no dgraph targets in config")
 		return nil, err
 	}
 	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	for _, target := range c.Targets {
+	for _, target := range targets {
 		wg.Add(1)
 		go func(tgt string) {
 			defer wg.Done()
@@ -58,9 +70,8 @@ func (c Config) NewClient() (*Client, error) {
 				err = e
 				return
 			}
-			cl := api.NewDgraphClient(grpcConn)
-			clients = append(clients, cl)
-			conn = append(conn, grpcConn)
+			client := api.NewDgraphClient(grpcConn)
+			clients = append(clients, client)
 		}(target)
 	}
 	wg.Wait()
@@ -77,8 +88,9 @@ func (c Config) NewClient() (*Client, error) {
 
 type Client struct {
 	*dgo.Dgraph
-	cancel context.CancelFunc
-	closed bool
+	cancel             context.CancelFunc
+	closed             bool
+	username, password string
 }
 
 func (d *Client) Txn(readOnly bool) *Txn {
@@ -87,6 +99,7 @@ func (d *Client) Txn(readOnly bool) *Txn {
 		txn := d.NewReadOnlyTxn()
 		return &Txn{Txn: txn}
 	}
+
 	return &Txn{Txn: d.NewTxn()}
 }
 

@@ -191,7 +191,7 @@ func (t Type[T]) checkStructField(pred Pred, field reflect.StructField) error {
 	}
 	switch typ.Name() {
 	case "string":
-		matched = pred.Type == "string"
+		matched = pred.Type == "string" || pred.Type == "password"
 	case "int", "int8", "int16", "int32", "int64":
 		matched = pred.Type == "int"
 	case "float32", "float64":
