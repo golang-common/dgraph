@@ -14,92 +14,73 @@ import (
 	"github.com/dgraph-io/dgo/v210"
 	"github.com/dgraph-io/dgo/v210/protos/api"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-	"sync"
 )
-
-type Option func(client *config)
-
-func WithUserAuth(username, password string) Option {
-	return func(config *config) {
-		config.username = username
-		config.password = password
-	}
-}
-
-type config struct {
-	username string
-	password string
-	err      error
-}
 
 func NewClient(targets []string, options ...Option) (*Client, error) {
 	var (
-		cfg             config
-		err             error
-		wg              sync.WaitGroup
-		clients         []api.DgraphClient
-		ctx, cancelFunc = context.WithCancel(context.Background())
-		opts            = []grpc.DialOption{
-			grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(256<<20), grpc.MaxCallRecvMsgSize(256<<20)),
-		}
+		clients    []api.DgraphClient
+		ctx        = context.Background()
+		err        error
+		client     = new(Client)
+		credential = insecure.NewCredentials()
 	)
-	defer func() {
-		if err != nil {
-			cancelFunc()
-		}
-	}()
-	for _, opt := range options {
-		opt(&cfg)
-		if cfg.err != nil {
-			err = cfg.err
-			return nil, err
-		}
-	}
 	if len(targets) == 0 {
 		err = errors.New("no dgraph targets in config")
 		return nil, err
 	}
-	opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	for _, target := range targets {
-		wg.Add(1)
-		go func(tgt string) {
-			defer wg.Done()
-			grpcConn, e := grpc.DialContext(ctx, tgt, opts...)
-			if e != nil {
-				err = e
-				return
-			}
-			client := api.NewDgraphClient(grpcConn)
-			clients = append(clients, client)
-		}(target)
+	for _, option := range options {
+		option(client)
 	}
-	wg.Wait()
-	if err != nil {
-		return nil, err
+	if client.servname != "" || client.certFile != "" {
+		credential, err = credentials.NewClientTLSFromFile(client.certFile, client.servname)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, target := range targets {
+		var grpcConn = new(grpc.ClientConn)
+		var grpcOptions = []grpc.DialOption{
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallSendMsgSize(256<<20),
+				grpc.MaxCallRecvMsgSize(256<<20),
+			),
+			grpc.WithTransportCredentials(credential),
+		}
+		grpcConn, err = grpc.DialContext(ctx, target, grpcOptions...)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, api.NewDgraphClient(grpcConn))
 	}
 	if len(clients) == 0 {
 		err = errors.New("no dgraph targets connected")
 		return nil, err
 	}
-	dgraph := dgo.NewDgraphClient(clients...)
-	return &Client{Dgraph: dgraph, cancel: cancelFunc}, nil
+	client.Dgraph = dgo.NewDgraphClient(clients...)
+	if client.username != "" && client.password != "" {
+		err = client.LoginIntoNamespace(context.Background(), client.username, client.password, client.namespace)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return client, nil
 }
 
 type Client struct {
 	*dgo.Dgraph
 	cancel             context.CancelFunc
-	closed             bool
 	username, password string
+	certFile, servname string
+	namespace          uint64
 }
 
 func (d *Client) Txn(readOnly bool) *Txn {
-	d.Dgraph.NewTxn()
 	if readOnly {
 		txn := d.NewReadOnlyTxn()
 		return &Txn{Txn: txn}
 	}
-
 	return &Txn{Txn: d.NewTxn()}
 }
 
