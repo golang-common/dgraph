@@ -70,18 +70,27 @@ func (t Type[T]) Nquad(uid string, data T) ([]*api.NQuad, error) {
 	for i := 0; i < val.NumField(); i++ {
 		subType := typ.Field(i)
 		subVal := val.Field(i)
+		subDbTag := subType.Tag.Get("db")
+		// 跳过UID的值解析
 		if subType.Name == Uid {
 			continue
 		}
+		// 跳过反向边
+		if strings.HasPrefix(subDbTag, "~") {
+			continue
+		}
+		// 跳过空值
 		if !subVal.IsValid() || subVal.IsZero() {
 			continue
 		}
+		// 跳过空指针，非空指针则解指针
 		if subVal.Kind() == reflect.Pointer {
 			if subVal.IsNil() {
 				continue
 			}
 			subVal = subVal.Elem()
 		}
+		// 解析结构体单字段到dgraph nquad
 		nquadList, e := t.fieldNquad(
 			uid,
 			t.Fields[subType.Name],
@@ -135,7 +144,8 @@ func (t Type[T]) fieldNquad(uid string, pred Pred, data any) ([]*api.NQuad, erro
 			if !facetVal.IsValid() || facetVal.IsZero() {
 				continue
 			}
-			f, err := facet.Facet(facetVal.Interface())
+			var f api.Facet
+			f, err = facet.Facet(facetVal.Interface())
 			if err != nil {
 				return nil, err
 			}
@@ -158,7 +168,7 @@ func (t Type[T]) CheckData() error {
 		}
 		db := fieldType.Tag.Get(Db)
 		// 忽略边
-		if strings.Contains(db, "|") {
+		if strings.Contains(db, "|") || strings.HasPrefix(db, "~") {
 			continue
 		}
 		v, ok := t.Fields[fieldType.Name]
