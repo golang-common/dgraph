@@ -58,7 +58,7 @@ func (t Type[T]) NquadDType(uid string) *api.NQuad {
 	}
 }
 
-func (t Type[T]) Nquad(uid string, data T) ([]*api.NQuad, error) {
+func (t Type[T]) Nquad(uid string, data any) ([]*api.NQuad, error) {
 	var (
 		r   []*api.NQuad
 		val = reflect.ValueOf(data)
@@ -89,6 +89,15 @@ func (t Type[T]) Nquad(uid string, data T) ([]*api.NQuad, error) {
 				continue
 			}
 			subVal = subVal.Elem()
+		}
+		// 如果是匿名结构体，则递归解析结构体到同UID
+		if subType.Anonymous && subVal.Kind() == reflect.Struct {
+			anoNquads, err := t.Nquad(uid, subVal.Interface())
+			if err != nil {
+				return nil, err
+			}
+			r = append(r, anoNquads...)
+			continue
 		}
 		// 解析结构体单字段到dgraph nquad
 		nquadList, e := t.fieldNquad(
@@ -134,7 +143,7 @@ func (t Type[T]) fieldNquad(uid string, pred Pred, data any) ([]*api.NQuad, erro
 	}
 	apival, objid, err := pred.Type.Value(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("field=%s, err=%s", pred.Name, err)
 	}
 	nquad := &api.NQuad{Subject: uid, Predicate: pred.Name, ObjectId: objid, ObjectValue: apival}
 	// 如果值是Uid类型，则解析边属性
